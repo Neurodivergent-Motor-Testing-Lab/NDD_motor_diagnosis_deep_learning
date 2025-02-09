@@ -3,17 +3,21 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 from sklearn.model_selection import (
-    StratifiedGroupKFold,
     StratifiedKFold,
     train_test_split,
 )
 import matplotlib.pyplot as plt
 import os
 import math
-from sklearn.utils import resample
 import pickle
-from .move_dataset import MovementDataset
-from sklearn.metrics import roc_curve, auc
+from .move_datasets import MovementDataset, SimpleDataset
+from sklearn.metrics import (
+    roc_curve,
+    auc,
+    confusion_matrix,
+    ConfusionMatrixDisplay,
+    classification_report,
+)
 
 
 def reset_weights(m):
@@ -154,23 +158,26 @@ class LSTM:
 
     def plot_metrics(
         self,
+        evaluation_str,
         train_loss,
-        test_loss,
+        evaluation_loss,
         train_accuracy,
-        test_accuracy,
+        evaluation_accuracy,
         ax_train_loss,
-        ax_test_loss,
+        ax_evaluation_loss,
         ax_train_accuracy,
-        ax_test_accuracy,
+        ax_evaluation_accuracy,
         evaluation_timestep,
     ):
         self.plot_single_metric(ax_train_loss, train_loss, evaluation_timestep)
         ax_train_loss.set_title("Training Loss")
         ax_train_loss.set(xlabel="# of Epochs", ylabel="Loss")
 
-        self.plot_single_metric(ax_test_loss, test_loss, evaluation_timestep)
-        ax_test_loss.set_title("Test Loss")
-        ax_test_loss.set(xlabel="# of Epochs", ylabel="Loss")
+        self.plot_single_metric(
+            ax_evaluation_loss, evaluation_loss, evaluation_timestep
+        )
+        ax_evaluation_loss.set_title(evaluation_str + " Loss")
+        ax_evaluation_loss.set(xlabel="# of Epochs", ylabel="Loss")
 
         self.plot_single_metric(ax_train_accuracy, train_accuracy, evaluation_timestep)
         ax_train_accuracy.set_ylim([0, 100.00])
@@ -180,212 +187,425 @@ class LSTM:
         # ax_train_accuracy.set_ybound(lower=0.0, upper=1)
 
         # ax_test_accuracy.set_ylim([0, 100.00])
-        self.plot_single_metric(ax_test_accuracy, test_accuracy, evaluation_timestep)
-        ax_test_accuracy.set_title("Test Accuracy")
-        ax_test_accuracy.set(xlabel="# of Epochs", ylabel="Accuracy")
-        ax_test_accuracy.set_aspect("auto")
+        self.plot_single_metric(
+            ax_evaluation_accuracy, evaluation_accuracy, evaluation_timestep
+        )
+        ax_evaluation_accuracy.set_title(evaluation_str + " Accuracy")
+        ax_evaluation_accuracy.set(xlabel="# of Epochs", ylabel="Accuracy")
+        ax_evaluation_accuracy.set_aspect("auto")
         # ax_test_accuracy.set_ybound(lower=0.0, upper=1)
 
         mng = plt.get_current_fig_manager()
         # mng.window.showMaximized()
         plt.pause(0.005)
 
-    def evaluate(self, net, dataLoader):
+    def evaluate(self, net, dataLoader, compute_report=False):
         # Evaluationfor this fold
-        correct, total = 0, 0
         net.eval()
 
         desired_labels, predictions, total_loss = self.predict(net, dataLoader)
 
         # Set total and correct
         _, predicted = torch.max(predictions, 1)
-        total += desired_labels.size(0)
-        correct += (predicted == desired_labels).sum().item()
 
-        return total, correct, total_loss
+        cm = confusion_matrix(
+            desired_labels.detach().cpu().numpy(), predicted.detach().cpu().numpy()
+        )
+        prediction_report = None
+        if compute_report:
+            prediction_report = classification_report(
+                desired_labels.detach().cpu().numpy(),
+                predicted.detach().cpu().numpy(),
+            )
+        return total_loss, cm, prediction_report
 
-    def train(self, dataset: MovementDataset, num_epochs=500, debug=True):
-        evaluation_timestep = 10
+    def trainSingleFold(
+        self,
+        fold,
+        save_path,
+        num_epochs,
+        early_stopping_obj,
+        evaluation_str,
+        trainloader,
+        evaluationloader,
+        evaluation_timestep=10,
+        debug=True,
+    ):
+        net = Net(
+            self.input_dim,
+            self.hidden_dim,
+            self.output_dim,
+            self.batch_size,
+            self.num_lstm_layers,
+            self.dropout,
+        )
+        net.to(self.device)
+        net.apply(reset_weights)
+        optimizer = torch.optim.Adam(
+            net.parameters(), weight_decay=self.weight_decay, lr=self.learning_rate
+        )
+
+        if early_stopping_obj is not None:
+            early_stopping_obj.reset()
 
         if debug:
-            num_evaluations = math.floor(num_epochs / evaluation_timestep)
-            train_accuracies = np.zeros((num_evaluations, self.num_folds))
-            train_loss = np.zeros((num_evaluations, self.num_folds))
-            test_accuracies = np.zeros((num_evaluations, self.num_folds))
-            test_loss = np.zeros((num_evaluations, self.num_folds))
+            num_evaluations = math.ceil(num_epochs / evaluation_timestep)
+            train_accuracies = np.zeros((num_evaluations, 1))
+            train_loss = np.zeros((num_evaluations, 1))
+            evaluation_accuracies = np.zeros((num_evaluations, 1))
+            evaluation_loss = np.zeros((num_evaluations, 1))
 
-        final_train_loss = np.zeros(self.num_folds)
-        final_test_loss = np.zeros(self.num_folds)
-        final_train_accuracies = np.zeros(self.num_folds)
-        final_test_accuracies = np.zeros(self.num_folds)
-        if debug:
             all_tpr = {}
             num_roc_points = 500
             interp_fpr = np.linspace(0, 1, num_roc_points)
-
             all_auc = {}
-            for ndd_class in dataset.diagnoses_mappings.keys():
-                all_tpr[ndd_class] = np.zeros((self.num_folds, num_roc_points))
-                all_auc[ndd_class] = np.zeros(self.num_folds)
+            for ndd_class in trainloader.dataset.diagnoses_mappings.keys():
+                all_tpr[ndd_class] = np.zeros(num_roc_points)
+                all_auc[ndd_class] = 0
 
             training_fig = plt.figure()
             ax_train_loss = training_fig.add_subplot(221)
             ax_train_loss.set_title("Training Loss", fontsize=15)
 
-            ax_test_loss = training_fig.add_subplot(222, sharex=ax_train_loss)
-            ax_test_loss.set_title("Test Loss", fontsize=15)
+            ax_evaluation_loss = training_fig.add_subplot(222, sharex=ax_train_loss)
+            ax_evaluation_loss.set_title(evaluation_str + " Loss", fontsize=15)
 
             ax_train_accuracy = training_fig.add_subplot(223, sharex=ax_train_loss)
             ax_train_accuracy.set_title("Training Accuracy", fontsize=15)
             ax_train_accuracy.set_ylim([0, 100])
 
-            ax_test_accuracy = training_fig.add_subplot(
+            ax_evaluation_accuracy = training_fig.add_subplot(
                 224, sharex=ax_train_loss, sharey=ax_train_accuracy
             )
-            ax_test_accuracy.set_title("Test Accuracy", fontsize=15)
-            # ax_test_accuracy.set_ylim([0, 1])
+            ax_evaluation_accuracy.set_title(evaluation_str + " Accuracy", fontsize=15)
 
-            mean_roc_fig = plt.figure()
+            roc_fig = plt.figure()
+
+        for epoch in range(0, num_epochs):
+            epoch_loss = 0
+            for i, data in enumerate(trainloader):
+                # Get inputs
+                inputs, targets = data
+                inputs = inputs.transpose(0, 2).transpose(1, 2)
+                targets = targets.view(-1)
+                net.train()
+                # Zero the gradients
+                optimizer.zero_grad()
+                # Perform forward pass
+                outputs = net(inputs)
+
+                # Compute loss
+                loss = self.loss_function(outputs, targets)
+
+                # Perform backward pass
+                loss.backward()
+
+                # Perform optimization
+                optimizer.step()
+
+                # See results
+                epoch_loss += loss.item()
+
+            if epoch % evaluation_timestep == 0:
+                # Print epoch
+                print(f"Evaluating epoch {epoch+1}")
+                if debug:
+                    curr_train_loss, train_cm, _ = self.evaluate(net, trainloader)
+                    curr_train_accuracy = 100.0 * (train_cm.trace() / train_cm.sum())
+                    curr_evaluation_loss, evaluation_cm, _ = self.evaluate(
+                        net, evaluationloader
+                    )
+                    curr_evaluation_accuracy = 100.0 * (
+                        evaluation_cm.trace() / evaluation_cm.sum()
+                    )
+                    print("Epoch Train loss", curr_train_loss)
+                    print("Epoch Evaluation loss", curr_evaluation_loss)
+                    print("Train accuracy", curr_train_accuracy)
+                    print("Evaluation accuracy", curr_evaluation_accuracy)
+                    epoch_idx = math.floor(epoch / evaluation_timestep)
+                    train_loss[epoch_idx] = curr_train_loss
+                    evaluation_loss[epoch_idx] = curr_evaluation_loss
+                    train_accuracies[epoch_idx] = curr_train_accuracy
+                    evaluation_accuracies[epoch_idx] = curr_evaluation_accuracy
+
+                    self.plot_metrics(
+                        evaluation_str,
+                        train_loss[: epoch_idx + 1],
+                        evaluation_loss[: epoch_idx + 1],
+                        train_accuracies[: epoch_idx + 1],
+                        evaluation_accuracies[: epoch_idx + 1],
+                        ax_train_loss,
+                        ax_evaluation_loss,
+                        ax_train_accuracy,
+                        ax_evaluation_accuracy,
+                        evaluation_timestep,
+                    )
+
+                is_stop_early = False
+                if early_stopping_obj is not None:
+                    early_stopping_obj(curr_evaluation_loss, net)
+                    is_stop_early = early_stopping_obj.is_stop_early
+                if is_stop_early:
+                    print("Early stopping")
+                    break
+
+        # Process is complete.
+        print(f"Training process has finished for fold {fold}. Saving trained model.")
+        print("Starting validation")
+        final_train_loss, final_train_cm, _ = self.evaluate(net, trainloader)
+        final_train_accuracy = 100.0 * (final_train_cm.trace() / final_train_cm.sum())
+        final_evaluation_loss, final_evaluation_cm, final_evaluation_report = (
+            self.evaluate(net, evaluationloader, compute_report=True)
+        )
+        final_evaluation_accuracy = 100.0 * (
+            final_evaluation_cm.trace() / final_evaluation_cm.sum()
+        )
+        print(f"Final train loss for fold {fold} is {final_train_loss}")
+        print(f"Final evaluation loss for fold {fold} is {final_evaluation_loss}")
+        print(f"Final train accuracy for fold {fold} is {final_train_accuracy}")
+        print(
+            f"Final evaluation accuracy for fold {fold} is {final_evaluation_accuracy}"
+        )
+        print(f"Final confusion matrix for {evaluation_str}\n", final_evaluation_cm)
+        print(
+            f"Final classification report for {evaluation_str}\n",
+            final_evaluation_report,
+        )
+        if debug:
+
+            interp_tpr_fold, roc_auc_fold = self.compute_one_v_rest_roc(
+                net,
+                trainloader.dataset.diagnoses_mappings,
+                evaluationloader,
+                interp_fpr,
+            )
+            for class_label in all_tpr.keys():
+                all_tpr[class_label] = interp_tpr_fold[class_label]
+                all_auc[class_label] = roc_auc_fold[class_label]
+
+            self.plot_roc(interp_fpr, all_tpr, all_auc, roc_fig)
+
+        if save_path is not None:
+            fold_path = os.path.join(save_path, f"model-fold-{fold}")
+
+            if not os.path.exists(fold_path):
+                os.makedirs(fold_path)
+            path = os.path.join(fold_path, "network.pt")
+            torch.save(
+                {
+                    "input_dim": self.input_dim,
+                    "hidden_dim": self.hidden_dim,
+                    "output_dim": self.output_dim,
+                    "batch_size": self.batch_size,
+                    "num_lstm_layers": self.num_lstm_layers,
+                    "dropout": self.dropout,
+                    "model_state_dict": net.state_dict(),
+                },
+                path,
+            )
+            path = os.path.join(fold_path, "train_loader.pt")
+            torch.save(trainloader, path)
+            path = os.path.join(fold_path, "evaluation_loader.pt")
+            torch.save(evaluationloader, path)
+
+            np.save(os.path.join(fold_path, "train_loss"), train_loss)
+            np.save(os.path.join(fold_path, "evaluation_loss"), evaluation_loss)
+            np.save(os.path.join(fold_path, "train_accuracy"), train_accuracies)
+            np.save(
+                os.path.join(fold_path, "evaluation_accuracy"), evaluation_accuracies
+            )
+            np.save(os.path.join(fold_path, "tpr"), all_tpr)
+            np.save(os.path.join(fold_path, "auc"), all_auc)
+            np.save(os.path.join(fold_path, "final_train_cm"), final_train_cm)
+            np.save(os.path.join(fold_path, "final_evaluation_cm"), final_evaluation_cm)
+            with open(
+                os.path.join(fold_path, "final_evaluation_cm_report.txt"), "w"
+            ) as f:
+                f.write(final_evaluation_report)
+
+            cm_labels = np.full(len(final_evaluation_cm), None)
+            cm_labels[list(trainloader.dataset.diagnoses_mappings.values())] = list(
+                trainloader.dataset.diagnoses_mappings.keys()
+            )
+            disp = ConfusionMatrixDisplay(
+                confusion_matrix=final_evaluation_cm, display_labels=cm_labels
+            )
+            disp.plot()
+
+        if debug:
+            plt.show()
+        return (
+            all_auc,
+            final_train_loss,
+            final_evaluation_loss,
+            final_train_accuracy,
+            final_evaluation_accuracy,
+            epoch,
+        )
+
+    def train(
+        self,
+        src_dataset: MovementDataset,
+        num_epochs=500,
+        test_ratio=0.2,
+        early_stopping_obj=None,
+        debug=True,
+    ):
+        training_dataset, testing_dataset = train_test_split(
+            src_dataset, test_size=test_ratio, stratify=src_dataset.y
+        )
+        testing_dataset_X, testing_dataset_y = map(list, zip(*testing_dataset))
+        testing_dataset = SimpleDataset(
+            testing_dataset_X, testing_dataset_y, src_dataset.diagnoses_mappings
+        )
+        testloader = torch.utils.data.DataLoader(
+            testing_dataset, batch_size=self.batch_size
+        )
+
+        training_dataset_X, training_dataset_y = map(list, zip(*training_dataset))
+        training_dataset = SimpleDataset(
+            training_dataset_X, training_dataset_y, src_dataset.diagnoses_mappings
+        )
+        evaluation_timestep = 10
+        # Set this incase num_folds = 0
+        max_epochs = num_epochs
+        if self.num_folds > 0:
+            max_epochs = self.trainKFold(
+                training_dataset,
+                num_epochs,
+                early_stopping_obj,
+                evaluation_timestep,
+                debug,
+            )
+            if max_epochs % evaluation_timestep != 0:
+                max_epochs = (
+                    int(evaluation_timestep - max_epochs % evaluation_timestep) + max_epochs
+                )
+        print("Running final training for ", max_epochs, "epochs")
+        self.trainFinalModel(
+            training_dataset,
+            testloader,
+            max_epochs,
+            evaluation_timestep,
+            debug,
+        )
+
+    def trainFinalModel(
+        self,
+        training_dataset,
+        testloader,
+        num_epochs,
+        evaluation_timestep,
+        debug,
+    ):
+        trainloader = torch.utils.data.DataLoader(
+            training_dataset,
+            batch_size=self.batch_size,
+            shuffle=True,
+        )
+        (
+            auc,
+            final_train_loss,
+            final_test_loss,
+            final_train_accuracy,
+            final_test_accuracy,
+            _,
+        ) = self.trainSingleFold(
+            0,
+            os.path.join(self.save_path, "Final"),
+            num_epochs,
+            None,
+            "Test",
+            trainloader,
+            testloader,
+            evaluation_timestep,
+            debug,
+        )
+        if debug:
+            print(f"Train loss: {final_train_loss}")
+            print(f"Test loss: {final_test_loss}")
+            print(f"Train Accuracy: {final_train_accuracy}")
+            print(f"Test Accuracy: {final_test_accuracy}")
+            print("AUCs:")
+            for ndd_class in auc.keys():
+                print("\t", ndd_class, auc[ndd_class])
+            print("--------------------------------")
+
+    def trainKFold(
+        self,
+        training_dataset,
+        num_epochs,
+        early_stopping_obj,
+        evaluation_timestep,
+        debug,
+    ):
+        if debug:
+            fold_wise_auc = {}
+            for class_label in training_dataset.diagnoses_mappings.keys():
+                fold_wise_auc[class_label] = {}
+            fold_wise_final_train_loss = {}
+            fold_wise_final_validation_loss = {}
+            fold_wise_final_train_accuracy = {}
+            fold_wise_final_validation_accuracy = {}
+
+        training_dataset_X = training_dataset.X
+        training_dataset_y_np = [x.detach().cpu().numpy() for x in training_dataset.y]
 
         kfold = StratifiedKFold(n_splits=self.num_folds, shuffle=True)
-        splits = kfold.split(dataset, dataset.y)
-        for fold, (train_ids, test_ids) in enumerate(splits):
+        splits = kfold.split(training_dataset_X, training_dataset_y_np)
+
+        max_epochs = 0
+        for fold, (train_ids, validation_ids) in enumerate(splits):
+            # for fold in range(self.num_folds):
             print(f"FOLD {fold}")
             print("--------------------------------")
             print("Num train", len(train_ids))
-            print("Num Test", len(test_ids))
+            print("Num Validation", len(validation_ids))
+
             # Sample elements randomly from a given list of ids, no replacement.
             train_subsampler = torch.utils.data.SubsetRandomSampler(train_ids)
-            test_subsampler = torch.utils.data.SubsetRandomSampler(test_ids)
-            # Define data loaders for training and testing data in this fold
+            validation_subsampler = torch.utils.data.SubsetRandomSampler(validation_ids)
+            # Define data loaders for training and validationing data in this fold
             trainloader = torch.utils.data.DataLoader(
-                dataset, batch_size=self.batch_size, sampler=train_subsampler
+                training_dataset, batch_size=self.batch_size, sampler=train_subsampler
             )
-            testloader = torch.utils.data.DataLoader(
-                dataset, batch_size=self.batch_size, sampler=test_subsampler
+            validationloader = torch.utils.data.DataLoader(
+                training_dataset,
+                batch_size=self.batch_size,
+                sampler=validation_subsampler,
             )
-            if self.save_path is not None:
-                fold_path = os.path.join(self.save_path, f"model-fold-{fold}")
-                if not os.path.exists(fold_path):
-                    os.makedirs(fold_path)
 
-            net = Net(
-                self.input_dim,
-                self.hidden_dim,
-                self.output_dim,
-                self.batch_size,
-                self.num_lstm_layers,
-                self.dropout,
+            (
+                fold_auc,
+                fold_final_train_loss,
+                fold_final_validation_loss,
+                fold_final_train_accuracy,
+                fold_final_validation_accuracy,
+                fold_epochs,
+            ) = self.trainSingleFold(
+                fold,
+                os.path.join(self.save_path, "K-Fold"),
+                num_epochs,
+                early_stopping_obj,
+                "Validation",
+                trainloader,
+                validationloader,
+                evaluation_timestep,
+                debug,
             )
-            net.to(dataset.device)
-            net.apply(reset_weights)
-            # Initialize optimizer
-            optimizer = torch.optim.Adam(
-                net.parameters(), weight_decay=self.weight_decay, lr=self.learning_rate
-            )
-            # Run the training loop for defined number of epochs
-            for epoch in range(0, num_epochs):
+            if fold_epochs > max_epochs:
+                max_epochs = fold_epochs
 
-                # Set current loss value
-                epoch_loss = 0
-                # Iterate over the DataLoader for training data
-                for i, data in enumerate(trainloader):
+            for ndd_class in fold_auc.keys():
+                fold_wise_auc[ndd_class][fold] = fold_auc[ndd_class]
+            fold_wise_final_train_loss[fold] = fold_final_train_loss
+            fold_wise_final_validation_loss[fold] = fold_final_validation_loss
+            fold_wise_final_train_accuracy[fold] = fold_final_train_accuracy
+            fold_wise_final_validation_accuracy[fold] = fold_final_validation_accuracy
 
-                    # Get inputs
-                    inputs, targets = data
-                    inputs = inputs.transpose(0, 2).transpose(1, 2)
-                    targets = targets.view(-1)
-                    net.train()
-                    # Zero the gradients
-                    optimizer.zero_grad()
-                    # Initialise hidden state
-                    # Don't do this if you want your LSTM to be stateful
-                    # Perform forward pass
-                    outputs = net(inputs)
-
-                    # Compute loss
-                    loss = self.loss_function(outputs, targets)
-
-                    # Perform backward pass
-                    loss.backward()
-
-                    # Perform optimization
-                    optimizer.step()
-
-                    # See results
-                    epoch_loss += loss.item()
-
-                if epoch % evaluation_timestep == 0:
-                    # Print epoch
-                    print(f"Evaluating epoch {epoch+1}")
-
-                    if debug:
-                        total, correct, curr_train_loss = self.evaluate(
-                            net, trainloader
-                        )
-                        train_accuracy = 100.0 * (correct / total)
-                        total, correct, curr_test_loss = self.evaluate(net, testloader)
-                        test_accuracy = 100.0 * (correct / total)
-                        print("Epoch Train loss", curr_train_loss)
-                        print("Epoch Test loss", curr_test_loss)
-                        print("Train accuracy", train_accuracy)
-                        print("Test accuracy", test_accuracy)
-                        epoch_idx = math.floor(epoch / evaluation_timestep)
-                        train_loss[epoch_idx, fold] = curr_train_loss
-                        test_loss[epoch_idx, fold] = curr_test_loss
-                        train_accuracies[epoch_idx, fold] = train_accuracy
-                        test_accuracies[epoch_idx, fold] = test_accuracy
-
-                        self.plot_metrics(
-                            train_loss[: epoch_idx + 1, : fold + 1],
-                            test_loss[: epoch_idx + 1, : fold + 1],
-                            train_accuracies[: epoch_idx + 1, : fold + 1],
-                            test_accuracies[: epoch_idx + 1, : fold + 1],
-                            ax_train_loss,
-                            ax_test_loss,
-                            ax_train_accuracy,
-                            ax_test_accuracy,
-                            evaluation_timestep,
-                        )
-            # Process is complete.
-            print("Training process has finished. Saving trained model.")
-            print("Starting testing")
-            total, correct, curr_train_loss = self.evaluate(net, trainloader)
-            final_train_loss[fold] = curr_train_loss
-            final_train_accuracies[fold] = 100.0 * (correct / total)
-            total, correct, curr_test_loss = self.evaluate(net, testloader)
-            final_test_loss[fold] = curr_test_loss
-            final_test_accuracies[fold] = 100.0 * (correct / total)
-            print(f"Final train loss for {fold} is {final_train_loss[:fold+1]}")
-            print(f"Final test loss for {fold} is {final_test_loss[:fold+1]}")
-            print(
-                f"Final train accuracy for {fold} is {final_train_accuracies[:fold+1]}"
-            )
-            print(f"Final test accuracy for {fold} is {final_test_accuracies[:fold+1]}")
-            # Print about testing
-            if self.save_path is not None:
-                # Saving the model
-                path = os.path.join(fold_path, "network.pt")
-                torch.save(net.state_dict(), path)
-
-                path = os.path.join(fold_path, "train_loader.pt")
-                torch.save(trainloader, path)
-
-                path = os.path.join(fold_path, "test_loader.pt")
-                torch.save(testloader, path)
-            if debug == True:
-                interp_tpr_fold, roc_auc_fold = self.compute_one_v_rest_roc(
-                    net, dataset.diagnoses_mappings, testloader, interp_fpr
-                )
-                for class_label in all_tpr.keys():
-                    all_tpr[class_label][fold, :] = interp_tpr_fold[class_label]
-                    all_auc[class_label][fold] = roc_auc_fold[class_label]
-
-                self.plot_mean_roc(fold, interp_fpr, all_tpr, all_auc, mean_roc_fig)
-
-                # Print accuracy
-                print(f"Accuracy for fold {fold}: {final_test_accuracies[fold]} %%")
-                print("--------------------------------")
+            # Print accuracy
+            print(f"Accuracy for fold {fold}: {fold_final_validation_accuracy} %%")
+            print("--------------------------------")
 
         # Print fold results
         if debug:
@@ -393,43 +613,40 @@ class LSTM:
             print("--------------------------------")
             print("Train loss:")
             for i in range(self.num_folds):
-                print(f"Fold {i}: {final_train_loss[i]} %")
-            print(f"Average: {np.average(final_train_loss)} %")
+                print(f"Fold {i}: {fold_wise_final_train_loss[i]} %")
+            print(f"Average: {np.average(list(fold_wise_final_train_loss.values()))} %")
 
-            print("Test loss:")
+            print("validation loss:")
             for i in range(self.num_folds):
-                print(f"Fold {i}: {final_test_loss[i]} %")
-            print(f"Average: {np.average(final_test_loss)} %")
+                print(f"Fold {i}: {fold_wise_final_validation_loss[i]} %")
+            print(
+                f"Average: {np.average(list(fold_wise_final_validation_loss.values()))} %"
+            )
 
             print("Train Accuracy:")
             for i in range(self.num_folds):
-                print(f"Fold {i}: {final_train_accuracies[i]} %")
-            print(f"Average: {np.average(final_train_accuracies)} %")
+                print(f"Fold {i}: {fold_wise_final_train_accuracy[i]} %")
+            print(
+                f"Average: {np.average(list(fold_wise_final_train_accuracy.values()))} %"
+            )
 
-            print("Test Accuracy:")
+            print("validation Accuracy:")
             for i in range(self.num_folds):
-                print(f"Fold {i}: {final_test_accuracies[i]} %")
-            print(f"Average: {np.average(final_test_accuracies)} %")
+                print(f"Fold {i}: {fold_wise_final_validation_accuracy[i]} %")
+            print(
+                f"Average: {np.average(list(fold_wise_final_validation_accuracy.values()))} %"
+            )
 
             print("AUCs:")
-            for ndd_class in all_auc.keys():
+            for ndd_class in fold_wise_auc.keys():
                 print("\t", ndd_class)
                 for i in range(self.num_folds):
-                    print(f"\t\tFold {i}: {all_auc[ndd_class][i]}")
-                print(f"\t\tAverage: {np.average(all_auc[ndd_class])}")
+                    print(f"\t\tFold {i}: {fold_wise_auc[ndd_class][i]}")
+                print(
+                    f"\t\tAverage: {np.average(list(fold_wise_auc[ndd_class].values()))}"
+                )
                 print("---")
-
-        if self.save_path is not None:
-            np.save(os.path.join(self.save_path, "train_loss"), train_loss)
-            np.save(os.path.join(self.save_path, "test_loss"), test_loss)
-            np.save(os.path.join(self.save_path, "train_accuracy"), train_accuracies)
-            np.save(os.path.join(self.save_path, "test_accuracy"), test_accuracies)
-            np.save(os.path.join(self.save_path, "all_tpr"), all_tpr)
-            np.save(os.path.join(self.save_path, "all_auc"), all_auc)
-
-        if debug:
-            plt.show()
-        return np.average(final_train_loss), np.average(final_test_accuracies)
+        return max_epochs
 
     def compute_one_v_rest_roc(self, lstm, label_mappings, testloader, interp_fpr):
         # global test_y
@@ -453,27 +670,17 @@ class LSTM:
             print("--------------------")
         return interp_tpr, roc_auc
 
-    def plot_mean_roc(self, up_to_fold, interp_fpr, interp_tpr, all_auc, fig):
+    def plot_roc(self, interp_fpr, interp_tpr, all_auc, fig):
         plt.figure(fig)
         fig.clear()
         colors = ["blue", "red", "green", "black"]
         for i, class_label in enumerate(interp_tpr.keys()):
-            curr_tpr = interp_tpr[class_label][: up_to_fold + 1, :]
-            mean_tpr = np.mean(curr_tpr, 0)
-            std_tpr = np.std(curr_tpr, 0)
-
-            curr_auc = all_auc[class_label][: up_to_fold + 1]
-            mean_auc = np.mean(curr_auc)
-            std_auc = np.std(curr_auc)
             plt.plot(
                 interp_fpr,
-                mean_tpr,
+                interp_tpr[class_label],
                 color=colors[i],
-                label=r"ROC curve for %s (area = %0.2f $\pm$ %0.2f)"
-                % (class_label, mean_auc, std_auc),
-            )
-            plt.fill_between(
-                interp_fpr, mean_tpr + std_tpr, mean_tpr - std_tpr, alpha=0.5
+                label=r"ROC curve for %s (area = %0.2f)"
+                % (class_label, all_auc[class_label]),
             )
 
         plt.plot([0, 1], [0, 1], "k--", linewidth=4)

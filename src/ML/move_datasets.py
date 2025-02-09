@@ -5,6 +5,20 @@ from sklearn import preprocessing
 from random import sample
 
 
+class SimpleDataset(Dataset):
+    def __init__(self, X, y, diagnoses_mappings):
+        self.X = X
+        self.y = torch.stack((y))
+
+        self.diagnoses_mappings = diagnoses_mappings
+
+    def __len__(self):
+        return self.y.shape[0]
+
+    def __getitem__(self, idx):
+        return self.X[idx], self.y[idx]
+
+
 class MovementDataset(Dataset):
 
     def __init__(self, device, X, y, label_shuffle_probability):

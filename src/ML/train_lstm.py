@@ -1,18 +1,12 @@
-import scipy.io as sio
 import numpy as np
 import os
 import argparse
-import pandas as pd
-from sklearn.model_selection import train_test_split
 from ML.LSTM import LSTM
 import torch
-import matplotlib.pyplot as plt
 from statistics import mean
-from ML.move_dataset import MovementDataset
-
-mean_test_accuracy_hist = []
-test_X = None
-test_y = None
+from ML.move_datasets import MovementDataset
+import random
+from ML.early_stopping import EarlyStopping
 
 
 def next_path(path_pattern):
@@ -52,8 +46,8 @@ def organizeTrialData(data_dict, signal_idx):
 
     return sequences, labels
 
-
-def pruneSequences(sequences, targets, min_sequence_length):
+# Remove trials that are too short
+def pruneShortSequences(sequences, targets, min_sequence_length):
     len_sequences = []
     unskipped_sequences = []
     unskipped_targets = []
@@ -75,7 +69,17 @@ def pruneSequences(sequences, targets, min_sequence_length):
     print("Num targets", len(unskipped_targets))
     return unskipped_sequences, unskipped_targets
 
-    # for class in label_mappings
+# Get a random sequence from each trial
+def getRandomSequence(sequences, targets, desired_sequence_length):
+    random_sequences = []
+    for i in range(len(sequences)):
+        old_array = sequences[i]
+        initial_index = random.randint(0, len(old_array) - desired_sequence_length)
+        new_array = old_array[
+            initial_index : initial_index + desired_sequence_length, :
+        ]
+        random_sequences.append(new_array)
+    return random_sequences, targets
 
 
 if __name__ == "__main__":
@@ -99,16 +103,33 @@ if __name__ == "__main__":
     )
     parser.add_argument("--ip_file_path", help="Path to data input")
     parser.add_argument("--op_data_path", help="Path to data output")
+    parser.add_argument(
+        "--test_ratio", help="Amount of data for test set", type=float, default=0.2
+    )
     parser.add_argument("--num_epochs", type=int, default=750)
     parser.add_argument("--num_folds", type=int, default=5)
-    parser.add_argument("--hidden_dim", type=int, default=20)
+    parser.add_argument("--hidden_dim", type=int, default=10)
     parser.add_argument("--learning_rate", type=float, default=0.001)
-    parser.add_argument("--weight_decay", type=float, default=0.005)
+    parser.add_argument("--weight_decay", type=float, default=0.01)
     parser.add_argument("--num_lstm_layers", type=int, default=2)
     parser.add_argument("--batch_size", type=int, default=500)
     parser.add_argument("--min_sequence_length", type=int, default=105)
     parser.add_argument("--dropout", type=float, default=0.3)
-
+    parser.add_argument(
+        "--desired_sequence_length",
+        help="Length of random sequence to use from trial",
+        type=int,
+        default=40,
+    )
+    parser.add_argument("--enable_early_stopping", action="store_true")
+    parser.add_argument("--early_stopping_patience", type=int, default=58)
+    parser.add_argument("--early_stopping_delta", type=float, default=0.005)
+    parser.add_argument(
+        "--label_shuffle_probability",
+        help="Number of labels from each class to assign a random label",
+        type=float,
+        default=0.0,
+    )
     args = parser.parse_args()
     print(args)
     ip_file_path = "../data/xsens/data/all_trial_data.npy"
@@ -143,7 +164,8 @@ if __name__ == "__main__":
     all_data = np.load(ip_file_path, allow_pickle=True)
     all_data = all_data.item()
     sequences, targets = organizeTrialData(all_data, sigal_idx)
-    new_seq, targets = pruneSequences(sequences, targets, args.min_sequence_length)
+    new_seq, targets = pruneShortSequences(sequences, targets, args.min_sequence_length)
+    new_seq, targets = getRandomSequence(new_seq, targets, args.desired_sequence_length)
     print("Num seq", len(new_seq))
     print("Num targets", len(targets))
     final_seq = np.stack(new_seq)
@@ -156,7 +178,9 @@ if __name__ == "__main__":
         print("DEVICE IS CPU :()")
 
     num_features = final_seq.shape[2]
-    dataset = MovementDataset(device, final_seq, targets)
+    dataset = MovementDataset(
+        device, final_seq, targets, args.label_shuffle_probability
+    )
 
     path = os.path.join(op_experiment_path, "dataset.pt")
     torch.save(dataset, path)
@@ -176,4 +200,14 @@ if __name__ == "__main__":
         batch_size=args.batch_size,
         dropout=args.dropout,
     )
-    lstm.train(dataset, num_epochs=args.num_epochs)
+    early_stopping_obj = None
+    if args.enable_early_stopping:
+        early_stopping_obj = EarlyStopping(
+            patience=args.early_stopping_patience, delta=args.early_stopping_delta
+        )
+    lstm.train(
+        dataset,
+        num_epochs=args.num_epochs,
+        test_ratio=args.test_ratio,
+        early_stopping_obj=early_stopping_obj,
+    )
