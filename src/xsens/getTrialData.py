@@ -10,12 +10,12 @@ if __name__ == "__main__":
     parser.add_argument("--input_folder", help="Path to Matlab data")
     parser.add_argument("--output_folder", help="Path to export the python data")
     args = parser.parse_args()
-    base_folder = "../../../Data_analyzed"
+    base_folder = "../../../NDD_motor_diagnosis_subject_data_analyzed"
 
     if args.input_folder != None:
         base_folder = args.input_folder
 
-    op_path = base_folder
+    op_path = "../../data/xsens/data/"
     if args.output_folder != None:
         op_path = args.output_folder
     all_data = {}
