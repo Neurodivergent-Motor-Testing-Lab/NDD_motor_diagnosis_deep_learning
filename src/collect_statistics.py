@@ -20,11 +20,13 @@ def get_roc_metrics(experiment_path):
         roc_stds[ndd] = np.std(roc_data[ndd])
     return roc_data.keys(), roc_means, roc_stds
 
+
 def get_accuracy_metrics(experiment_path):
     test_accuracy = np.load(os.path.join(experiment_path, "test_accuracy.npy"))
     mean_accuracy = np.mean(test_accuracy[-1])
     std_accuracy = np.std(test_accuracy[-1])
     return mean_accuracy, std_accuracy
+
 
 def plot_single_metric(ax, metric, evaluation_timestep, title, xlabel, ylabel):
     num_epochs = metric.shape[0]
@@ -45,6 +47,7 @@ def plot_single_metric(ax, metric, evaluation_timestep, title, xlabel, ylabel):
     ax.set_xlabel(xlabel, fontsize=label_size)
     ax.set_ylabel(ylabel, fontsize=label_size)
     ax.tick_params(axis="both", labelsize=tick_size)
+
 
 def redraw_training_data(experiment_path, output_folder):
     evaluation_timestep = 10
@@ -107,13 +110,14 @@ def redraw_training_data(experiment_path, output_folder):
     )
     plt.close(training_fig)
 
+
 def redraw_all_roc(experiment_path, output_folder, condition_map):
     num_roc_points = 500
     fpr = np.linspace(0, 1, num_roc_points)
     tpr = np.load(
         os.path.join(experiment_path, "all_tpr.npy"), allow_pickle=True
     ).item()
-    colors = ['blue', 'red', 'green', 'black']
+    colors = ["blue", "red", "green", "black"]
 
     without_std_fig = plt.figure()
     without_std_ax = without_std_fig.gca()
@@ -134,21 +138,38 @@ def redraw_all_roc(experiment_path, output_folder, condition_map):
         mean_auc = np.mean(fold_aucs)
         std_auc = np.std(fold_aucs)
 
-        without_std_ax.plot(fpr, mean_tpr, color = colors[i], label=r"ROC curve for %s (area = %0.2f $\pm$ %0.2f)" %(ndd, mean_auc, std_auc), linewidth = 4)
+        without_std_ax.plot(
+            fpr,
+            mean_tpr,
+            color=colors[i],
+            label=r"ROC curve for %s (area = %0.2f $\pm$ %0.2f)"
+            % (ndd, mean_auc, std_auc),
+            linewidth=4,
+        )
 
-        with_std_ax.plot(fpr, mean_tpr, color = colors[i], label=r"ROC curve for %s (area = %0.2f $\pm$ %0.2f)" %(ndd, mean_auc, std_auc), linewidth=2)
+        with_std_ax.plot(
+            fpr,
+            mean_tpr,
+            color=colors[i],
+            label=r"ROC curve for %s (area = %0.2f $\pm$ %0.2f)"
+            % (ndd, mean_auc, std_auc),
+            linewidth=2,
+        )
         with_std_ax.fill_between(fpr, mean_tpr + std_tpr, mean_tpr - std_tpr, alpha=0.5)
 
     for fig, ax in [(with_std_fig, with_std_ax), (without_std_fig, without_std_ax)]:
-        ax.plot([0, 1], [0, 1], 'k--', linewidth=4)
+        ax.plot([0, 1], [0, 1], "k--", linewidth=4)
         ax.set_xlim(-0.05, 1.0)
         ax.set_ylim(0, 1.05)
-        ax.set_xlabel("False Positive Rate", fontsize=1.5*label_size)
-        ax.set_ylabel("True Positive Rate", fontsize=1.5*label_size)
-        ax.set_title('Receiver operating characteristic for multi-class data', fontsize=1.5*title_size)
-        ax.legend(loc="lower right", prop={"size":20})
-        ax.tick_params(axis='both', labelsize=1.5*tick_size)
-    
+        ax.set_xlabel("False Positive Rate", fontsize=1.5 * label_size)
+        ax.set_ylabel("True Positive Rate", fontsize=1.5 * label_size)
+        ax.set_title(
+            "Receiver operating characteristic for multi-class data",
+            fontsize=1.5 * title_size,
+        )
+        ax.legend(loc="lower right", prop={"size": 20})
+        ax.tick_params(axis="both", labelsize=1.5 * tick_size)
+
         mng = fig.canvas.manager
         mng.full_screen_toggle()
         mng.resize(*mng.window.maxsize())
@@ -162,6 +183,7 @@ def redraw_all_roc(experiment_path, output_folder, condition_map):
         os.path.join(output_folder, "all_roc_without_std.svg"), bbox_inches="tight"
     )
     plt.close(without_std_fig)
+
 
 def redraw_individual_roc(experiment_path, output_folder, condition_map):
     num_roc_points = 500
@@ -185,18 +207,26 @@ def redraw_individual_roc(experiment_path, output_folder, condition_map):
 
         fig = plt.figure()
         ax = fig.gca()
-        ax.plot(fpr, mean_tpr, label=r"Area = %0.2f $\pm$ %0.2f" %(mean_auc, std_auc), linewidth = 4)
+        ax.plot(
+            fpr,
+            mean_tpr,
+            label=r"Area = %0.2f $\pm$ %0.2f" % (mean_auc, std_auc),
+            linewidth=4,
+        )
         ax.fill_between(fpr, mean_tpr + std_tpr, mean_tpr - std_tpr, alpha=0.5)
 
-        ax.plot([0, 1], [0, 1], 'k--', linewidth=4)
+        ax.plot([0, 1], [0, 1], "k--", linewidth=4)
         ax.set_xlim(-0.05, 1.0)
         ax.set_ylim(0, 1.05)
-        ax.set_xlabel("False Positive Rate", fontsize=1.5*label_size)
-        ax.set_ylabel("True Positive Rate", fontsize=1.5*label_size)
-        ax.set_title(f'Receiver operating characteristic for {ndd} vs Rest', fontsize=1.5*title_size)
-        ax.legend(loc="lower right", prop={"size":20})
-        ax.tick_params(axis='both', labelsize=1.5*tick_size)
-    
+        ax.set_xlabel("False Positive Rate", fontsize=1.5 * label_size)
+        ax.set_ylabel("True Positive Rate", fontsize=1.5 * label_size)
+        ax.set_title(
+            f"Receiver operating characteristic for {ndd} vs Rest",
+            fontsize=1.5 * title_size,
+        )
+        ax.legend(loc="lower right", prop={"size": 20})
+        ax.tick_params(axis="both", labelsize=1.5 * tick_size)
+
         mng = fig.canvas.manager
         mng.full_screen_toggle()
         mng.resize(*mng.window.maxsize())
@@ -205,6 +235,7 @@ def redraw_individual_roc(experiment_path, output_folder, condition_map):
             os.path.join(output_folder, f"roc_{ndd}_vs_rest.svg"), bbox_inches="tight"
         )
         plt.close(fig)
+
 
 def redraw_figures(experiment_path, output_folder, condition_map):
     plt.ioff()
