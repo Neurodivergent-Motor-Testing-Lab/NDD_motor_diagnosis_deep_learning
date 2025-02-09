@@ -19,7 +19,7 @@ from sklearn.metrics import (
     classification_report,
 )
 
-
+# Reset the weights of a network to their initial values
 def reset_weights(m):
     for layer in m.children():
         if hasattr(layer, "reset_parameters"):
@@ -64,13 +64,11 @@ class Net(nn.Module):
         dropout_op = self.dropout(flattened_lstm_out)
 
         # Only take the output from the final timetep
-        # Can pass on the entirety of lstm_out to the next layer if it is a seq2seq prediction
         y_pred = self.linear(dropout_op)
-        # y_pred = F.softmax(y_pred, dim=0)
         return y_pred
 
-
-class LSTM:
+# Class that creates and trains a network
+class LSTMNetwork:
     def __init__(
         self,
         num_folds,
@@ -140,6 +138,7 @@ class LSTM:
                     desired_labels = torch.concat((desired_labels, targets))
         return desired_labels, prediction, total_loss
 
+    # Helper function to display a sequence of a metric over epochs
     def plot_single_metric(self, ax, metric, evaluation_timestep):
         num_epochs = metric.shape[0]
         if num_epochs == 0:
@@ -156,6 +155,7 @@ class LSTM:
         # std_metric = np.std(metric, axis=1)
         # ax.fill_between(x_range, mean_metric-std_metric, mean_metric+std_metric, alpha=0.5)
 
+    # Function to plot all metrics over epochs
     def plot_metrics(
         self,
         evaluation_str,
@@ -184,21 +184,18 @@ class LSTM:
         ax_train_accuracy.set_title("Training Accuracy")
         ax_train_accuracy.set(xlabel="# of Epochs", ylabel="Accuracy")
         ax_train_accuracy.set_aspect("auto")
-        # ax_train_accuracy.set_ybound(lower=0.0, upper=1)
-
-        # ax_test_accuracy.set_ylim([0, 100.00])
+        
         self.plot_single_metric(
             ax_evaluation_accuracy, evaluation_accuracy, evaluation_timestep
         )
         ax_evaluation_accuracy.set_title(evaluation_str + " Accuracy")
         ax_evaluation_accuracy.set(xlabel="# of Epochs", ylabel="Accuracy")
         ax_evaluation_accuracy.set_aspect("auto")
-        # ax_test_accuracy.set_ybound(lower=0.0, upper=1)
-
-        mng = plt.get_current_fig_manager()
-        # mng.window.showMaximized()
+        
         plt.pause(0.005)
 
+    # Function to evaluate the model on a dataset
+    # Returns the loss on that dataset, the confusion matrix, and a classification report
     def evaluate(self, net, dataLoader, compute_report=False):
         # Evaluationfor this fold
         net.eval()
@@ -219,7 +216,9 @@ class LSTM:
             )
         return total_loss, cm, prediction_report
 
-    def trainSingleFold(
+    # Function that trains the model on a single training and evaluation set
+    # This is useful for training one fold, or for training on the entire dataset
+    def trainAndEvaluateOnDatasets(
         self,
         fold,
         save_path,
@@ -443,6 +442,8 @@ class LSTM:
             epoch,
         )
 
+    # Train the network using K-Fold Cross Validaiton on the training set
+    # Then train on entire training set and evaluate on test set
     def train(
         self,
         src_dataset: MovementDataset,
@@ -490,6 +491,7 @@ class LSTM:
             debug,
         )
 
+    # Train the network on the entire training set and evaluate on test set
     def trainFinalModel(
         self,
         training_dataset,
@@ -510,7 +512,7 @@ class LSTM:
             final_train_accuracy,
             final_test_accuracy,
             _,
-        ) = self.trainSingleFold(
+        ) = self.trainAndEvaluateOnDatasets(
             0,
             os.path.join(self.save_path, "Final"),
             num_epochs,
@@ -531,6 +533,7 @@ class LSTM:
                 print("\t", ndd_class, auc[ndd_class])
             print("--------------------------------")
 
+    # Function that trains the network using K-Fold Cross Validation on the training set
     def trainKFold(
         self,
         training_dataset,
@@ -582,7 +585,7 @@ class LSTM:
                 fold_final_train_accuracy,
                 fold_final_validation_accuracy,
                 fold_epochs,
-            ) = self.trainSingleFold(
+            ) = self.trainAndEvaluateOnDatasets(
                 fold,
                 os.path.join(self.save_path, "K-Fold"),
                 num_epochs,
@@ -648,6 +651,7 @@ class LSTM:
                 print("---")
         return max_epochs
 
+    # Compute ROC for each class
     def compute_one_v_rest_roc(self, lstm, label_mappings, testloader, interp_fpr):
         # global test_y
         interp_tpr = dict()
@@ -670,6 +674,7 @@ class LSTM:
             print("--------------------")
         return interp_tpr, roc_auc
 
+    # Plot ROC curves
     def plot_roc(self, interp_fpr, interp_tpr, all_auc, fig):
         plt.figure(fig)
         fig.clear()

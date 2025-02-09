@@ -1,7 +1,7 @@
 import numpy as np
 import os
 import argparse
-from ML.LSTM import LSTM
+from ML.LSTM_network import LSTMNetwork
 import torch
 from statistics import mean
 from ML.move_datasets import MovementDataset
@@ -188,7 +188,7 @@ if __name__ == "__main__":
     num_outputs = np.prod(np.unique(dataset.y).shape)
     print(num_outputs)
 
-    lstm = LSTM(
+    lstm_network = LSTMNetwork(
         args.num_folds,
         input_dim=num_features,
         output_dim=num_outputs,
@@ -205,7 +205,7 @@ if __name__ == "__main__":
         early_stopping_obj = EarlyStopping(
             patience=args.early_stopping_patience, delta=args.early_stopping_delta
         )
-    lstm.train(
+    lstm_network.train(
         dataset,
         num_epochs=args.num_epochs,
         test_ratio=args.test_ratio,
