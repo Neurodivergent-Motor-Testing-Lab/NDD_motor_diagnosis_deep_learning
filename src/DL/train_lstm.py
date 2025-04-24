@@ -1,12 +1,12 @@
 import numpy as np
 import os
 import argparse
-from ML.LSTM_network import LSTMNetwork
+from DL.LSTM_network import LSTMNetwork
 import torch
 from statistics import mean
-from ML.move_datasets import MovementDataset
+from DL.move_datasets import MovementDataset
 import random
-from ML.early_stopping import EarlyStopping
+from DL.early_stopping import EarlyStopping
 
 
 def next_path(path_pattern):
@@ -46,6 +46,7 @@ def organizeTrialData(data_dict, signal_idx):
 
     return sequences, labels
 
+
 # Remove trials that are too short
 def pruneShortSequences(sequences, targets, min_sequence_length):
     len_sequences = []
@@ -69,6 +70,7 @@ def pruneShortSequences(sequences, targets, min_sequence_length):
     print("Num targets", len(unskipped_targets))
     return unskipped_sequences, unskipped_targets
 
+
 # Get a random sequence from each trial
 def getRandomSequence(sequences, targets, desired_sequence_length):
     random_sequences = []
@@ -81,6 +83,101 @@ def getRandomSequence(sequences, targets, desired_sequence_length):
         random_sequences.append(new_array)
     return random_sequences, targets
 
+
+def runExperiment(
+    input_signal,
+    ip_file_path,
+    op_data_path,
+    test_ratio,
+    min_sequence_length,
+    desired_sequence_length,
+    label_shuffle_probability,
+    enable_early_stopping,
+    early_stopping_patience,
+    early_stopping_delta,
+    num_folds,
+    hidden_dims,
+    learning_rates,
+    weight_decays,
+    num_lstm_layers,
+    batch_size,
+    dropout,
+    num_epochs,
+):
+
+    if input_signal == "linear_accel":
+        sigal_idx = [0, 1, 2]
+    if input_signal == "rpy_dot":
+        sigal_idx = [3, 4, 5]
+    if input_signal == "rpy":
+        sigal_idx = [6, 7, 8]
+    if input_signal == "linear_accel_and_rpy_dot":
+        sigal_idx = [0, 1, 2, 3, 4, 5]
+    if input_signal == "linear_accel_and_rpy":
+        sigal_idx = [0, 1, 2, 6, 7, 8]
+    if input_signal == "rpy_dot_and_rpy":
+        sigal_idx = [3, 4, 5, 6, 7, 8]
+    if input_signal == "all":
+        sigal_idx = [0, 1, 2, 3, 4, 5, 6, 7, 8]
+
+    path_pattern = os.path.join(op_data_path, "Experiment-")
+    path_pattern += "%s"
+    op_experiment_path = next_path(path_pattern)
+    if not os.path.exists(op_experiment_path):
+        os.makedirs(op_experiment_path)
+    with open(os.path.join(op_experiment_path, "settings.txt"), "w") as f:
+        f.write(locals().__str__())
+
+    all_data = np.load(ip_file_path, allow_pickle=True)
+    all_data = all_data.item()
+    sequences, targets = organizeTrialData(all_data, sigal_idx)
+    new_seq, targets = pruneShortSequences(sequences, targets, min_sequence_length)
+    new_seq, targets = getRandomSequence(new_seq, targets, desired_sequence_length)
+    print("Num seq", len(new_seq))
+    print("Num targets", len(targets))
+    final_seq = np.stack(new_seq)
+
+    if torch.cuda.is_available():
+        device = torch.device("cuda:0")  # Uncomment this to run on GPU'
+        print("DEVICE IS CUDA")
+    else:
+        device = torch.device("cpu")
+        print("DEVICE IS CPU :()")
+
+    num_features = final_seq.shape[2]
+    dataset = MovementDataset(device, final_seq, targets, label_shuffle_probability)
+
+    path = os.path.join(op_experiment_path, "dataset.pt")
+    torch.save(dataset, path)
+
+    num_outputs = np.prod(np.unique(dataset.y).shape)
+    print(num_outputs)
+
+    lstm_network = LSTMNetwork(
+        num_folds,
+        input_dim=num_features,
+        output_dim=num_outputs,
+        save_path=op_experiment_path,
+        hidden_dim_list=hidden_dims,
+        learning_rate_list=learning_rates,
+        weight_decay_list=weight_decays,
+        num_lstm_layers_list=num_lstm_layers,
+        batch_size=batch_size,
+        dropout=dropout,
+    )
+    early_stopping_obj = None
+    if enable_early_stopping:
+        early_stopping_obj = EarlyStopping(
+            patience=early_stopping_patience, delta=early_stopping_delta
+        )
+    lstm_network.train(
+        dataset,
+        num_epochs=num_epochs,
+        test_ratio=test_ratio,
+        early_stopping_obj=early_stopping_obj,
+    )
+
+    return op_experiment_path
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train LSTM.")
@@ -96,7 +193,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "input_signal",
         type=str,
-        default="rpy_dot_and_rpy",
+        default="all",
         choices=input_signals,
         help="Select what input signal to use. Choices include "
         + ", ".join(input_signals),
@@ -108,10 +205,14 @@ if __name__ == "__main__":
     )
     parser.add_argument("--num_epochs", type=int, default=750)
     parser.add_argument("--num_folds", type=int, default=5)
-    parser.add_argument("--hidden_dims", nargs='+', type=int, default=[10, 20])
-    parser.add_argument("--learning_rates", nargs='+', type=float, default=[0.001, 0.0025, 0.005])
-    parser.add_argument("--weight_decays", nargs='+', type=float, default=[0.001, 0.005, 0.01, 0.05])
-    parser.add_argument("--num_lstm_layers", nargs='+', type=int, default=[1, 2])
+    parser.add_argument("--hidden_dims", nargs="+", type=int, default=[10, 20])
+    parser.add_argument(
+        "--learning_rates", nargs="+", type=float, default=[0.001, 0.0025, 0.005]
+    )
+    parser.add_argument(
+        "--weight_decays", nargs="+", type=float, default=[0.001, 0.005, 0.01, 0.05]
+    )
+    parser.add_argument("--num_lstm_layers", nargs="+", type=int, default=[1, 2])
     parser.add_argument("--batch_size", type=int, default=500)
     parser.add_argument("--min_sequence_length", type=int, default=105)
     parser.add_argument("--dropout", type=float, default=0.3)
@@ -139,75 +240,23 @@ if __name__ == "__main__":
     if args.op_data_path != None:
         op_data_path = args.op_data_path
 
-    if args.input_signal == "linear_accel":
-        sigal_idx = [0, 1, 2]
-    if args.input_signal == "rpy_dot":
-        sigal_idx = [3, 4, 5]
-    if args.input_signal == "rpy":
-        sigal_idx = [6, 7, 8]
-    if args.input_signal == "linear_accel_and_rpy_dot":
-        sigal_idx = [0, 1, 2, 3, 4, 5]
-    if args.input_signal == "linear_accel_and_rpy":
-        sigal_idx = [0, 1, 2, 6, 7, 8]
-    if args.input_signal == "rpy_dot_and_rpy":
-        sigal_idx = [3, 4, 5, 6, 7, 8]
-    if args.input_signal == "all":
-        sigal_idx = [0, 1, 2, 3, 4, 5, 6, 7, 8]
-
-    path_pattern = os.path.join(op_data_path, "Experiment-")
-    path_pattern += "%s"
-    op_experiment_path = next_path(path_pattern)
-    if not os.path.exists(op_experiment_path):
-        os.makedirs(op_experiment_path)
-    with open(os.path.join(op_experiment_path, "settings.txt"), "w") as f:
-        f.write(args.__str__())
-    all_data = np.load(ip_file_path, allow_pickle=True)
-    all_data = all_data.item()
-    sequences, targets = organizeTrialData(all_data, sigal_idx)
-    new_seq, targets = pruneShortSequences(sequences, targets, args.min_sequence_length)
-    new_seq, targets = getRandomSequence(new_seq, targets, args.desired_sequence_length)
-    print("Num seq", len(new_seq))
-    print("Num targets", len(targets))
-    final_seq = np.stack(new_seq)
-
-    if torch.cuda.is_available():
-        device = torch.device("cuda:0")  # Uncomment this to run on GPU'
-        print("DEVICE IS CUDA")
-    else:
-        device = torch.device("cpu")
-        print("DEVICE IS CPU :()")
-
-    num_features = final_seq.shape[2]
-    dataset = MovementDataset(
-        device, final_seq, targets, args.label_shuffle_probability
-    )
-
-    path = os.path.join(op_experiment_path, "dataset.pt")
-    torch.save(dataset, path)
-
-    num_outputs = np.prod(np.unique(dataset.y).shape)
-    print(num_outputs)
-
-    lstm_network = LSTMNetwork(
+    runExperiment(
+        args.input_signal,
+        ip_file_path,
+        op_data_path,
+        args.test_ratio,
+        args.min_sequence_length,
+        args.desired_sequence_length,
+        args.label_shuffle_probability,
+        args.enable_early_stopping,
+        args.early_stopping_patience,
+        args.early_stopping_delta,
         args.num_folds,
-        input_dim=num_features,
-        output_dim=num_outputs,
-        save_path=op_experiment_path,
-        hidden_dim_list=args.hidden_dims,
-        learning_rate_list=args.learning_rates,
-        weight_decay_list=args.weight_decays,
-        num_lstm_layers_list=args.num_lstm_layers,
-        batch_size=args.batch_size,
-        dropout=args.dropout,
-    )
-    early_stopping_obj = None
-    if args.enable_early_stopping:
-        early_stopping_obj = EarlyStopping(
-            patience=args.early_stopping_patience, delta=args.early_stopping_delta
-        )
-    lstm_network.train(
-        dataset,
-        num_epochs=args.num_epochs,
-        test_ratio=args.test_ratio,
-        early_stopping_obj=early_stopping_obj,
+        args.hidden_dims,
+        args.learning_rates,
+        args.weight_decays,
+        args.num_lstm_layers,
+        args.batch_size,
+        args.dropout,
+        args.num_epochs,
     )

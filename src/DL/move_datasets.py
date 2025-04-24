@@ -38,8 +38,7 @@ class MovementDataset(Dataset):
         self.y = le.transform(diagnoses)
         self.diagnoses_mappings = dict(zip(le.classes_, le.transform(le.classes_)))
         if label_shuffle_probability > 0.0:
-            unique_labels = np.unique(self.y)
-            self.y = self.labelShuffle(unique_labels, label_shuffle_probability)
+            self.y = self.labelShuffle(label_shuffle_probability)
         unique, label_counts = np.unique(self.y, return_counts=True)
         dataset_counts = dict(zip(unique, label_counts))
         print(self.diagnoses_mappings)
@@ -68,11 +67,28 @@ class MovementDataset(Dataset):
 
         return xs, ys
 
-    def labelShuffle(self, unique_labels, probability):
+    def labelShuffle(self, probability):
+        if not (0 < probability <= 1):
+            raise ValueError("probability must be a float between 0 and 1.")
+
+        n = self.y.shape[0]
+        subset_size = int(np.floor(n * probability))
+
+        # Need at least two elements to swap
+        if subset_size < 2:
+            return self.y
+
+        # Randomly choose subset_size indices without replacement
+        indices = np.random.choice(n, subset_size, replace=False)
+
+        # Shuffle the indices to determine new positions
+        shuffled_indices = np.random.permutation(indices)
+
         new_y = self.y.copy()
-        for class_label in unique_labels:
-            class_indices = np.where(self.y == class_label)[0]
-            subset_size = int(class_indices.shape[0] * probability)
-            subset_indices = sample(list(class_indices), subset_size)
-            new_y[subset_indices] = np.random.choice(unique_labels, subset_size)
+
+        # Perform the swap
+        temp = new_y.copy()
+
+        new_y[indices] = temp[np.argsort(shuffled_indices)]
+
         return new_y

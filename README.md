@@ -6,10 +6,10 @@ python getTrialData.py
 ``` 
 The above step only needs to be done once unless new participants are analyzed using the matlab code
 
-2) After that, to train a DL model run 
+2) After that, to train a DL model with hyperparameter tuning run 
 ```
 cd src
-python -m DL.train_lstm
+python -m DL.train_lstm all --enable_early_stopping
 ```
 
 3) Once all signals have been analyzed, you can create tabular data about the final metrics. 
@@ -19,3 +19,8 @@ Inside that subfolder must lie all the contents of the DL experiment output. The
 cd src
 python collect_statistics.py
 ```
+
+4) To run the experiment with random swapping of labels, run
+```
+cd src
+python -m DL.random_permutations all --enable_early_stopping
