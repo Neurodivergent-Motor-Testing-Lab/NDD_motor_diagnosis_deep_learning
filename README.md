@@ -9,7 +9,7 @@ The above step only needs to be done once unless new participants are analyzed u
 2) After that, to train a DL model run 
 ```
 cd src
-python -m ML.train_lstm
+python -m DL.train_lstm
 ```
 
 3) Once all signals have been analyzed, you can create tabular data about the final metrics. 
