@@ -50,7 +50,7 @@ class Net(nn.Module):
         self.lstm = nn.LSTM(
             self.input_dim, self.hidden_dim, self.num_lstm_layers, dropout=dropout
         )
-        self.dropout = nn.Dropout(p=dropout)
+        self.dropout_layer = nn.Dropout(p=dropout)
         # Define the output layer
         self.linear = nn.Linear(self.hidden_dim, self.output_dim)
         nn.init.normal_(self.linear.weight, mean=0, std=1.0)
@@ -62,7 +62,7 @@ class Net(nn.Module):
         # have shape (num_layers, batch_size, hidden_dim).
         lstm_out, _ = self.lstm(input)
         flattened_lstm_out = lstm_out[-1, :, :]
-        dropout_op = self.dropout(flattened_lstm_out)
+        dropout_op = self.dropout_layer(flattened_lstm_out)
 
         # Only take the output from the final timetep
         y_pred = self.linear(dropout_op)

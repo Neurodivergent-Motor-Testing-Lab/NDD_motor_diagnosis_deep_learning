@@ -24,3 +24,10 @@ python collect_statistics.py
 ```
 cd src
 python -m DL.random_permutations all --enable_early_stopping
+```
+
+5) To compute plots for the SHAP values, run
+```
+cd src
+python -m interpret.shap_values all --experiment_path <path_to_output_from_3>
+``` 
