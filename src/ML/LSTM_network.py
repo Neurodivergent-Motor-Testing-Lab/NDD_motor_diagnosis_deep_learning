@@ -18,6 +18,7 @@ from sklearn.metrics import (
     ConfusionMatrixDisplay,
     classification_report,
 )
+import shutil
 
 # Reset the weights of a network to their initial values
 def reset_weights(m):
@@ -73,12 +74,12 @@ class LSTMNetwork:
         self,
         num_folds,
         input_dim=9,
-        hidden_dim=20,
+        hidden_dim_list=[10, 20],
         output_dim=4,
         save_path="../data/models/",
-        learning_rate=0.0005,
-        weight_decay=0.005,
-        num_lstm_layers=1,
+        learning_rate_list=[0.001, 0.0025, 0.005],
+        weight_decay_list=[0.001, 0.005, 0.01, 0.05],
+        num_lstm_layers_list=[1, 2],
         batch_size=50,
         dropout=0.3,
     ):
@@ -91,12 +92,12 @@ class LSTMNetwork:
 
         self.num_folds = num_folds
         self.input_dim = input_dim
-        self.hidden_dim = hidden_dim
+        self.hidden_dim_list = hidden_dim_list
         self.output_dim = output_dim
         self.save_path = save_path
-        self.learning_rate = learning_rate
-        self.weight_decay = weight_decay
-        self.num_lstm_layers = num_lstm_layers
+        self.learning_rate_list = learning_rate_list
+        self.weight_decay_list = weight_decay_list
+        self.num_lstm_layers_list = num_lstm_layers_list
         self.batch_size = batch_size
         self.dropout = dropout
         self.loss_function = nn.CrossEntropyLoss()
@@ -184,15 +185,15 @@ class LSTMNetwork:
         ax_train_accuracy.set_title("Training Accuracy")
         ax_train_accuracy.set(xlabel="# of Epochs", ylabel="Accuracy")
         ax_train_accuracy.set_aspect("auto")
-        
+
         self.plot_single_metric(
             ax_evaluation_accuracy, evaluation_accuracy, evaluation_timestep
         )
         ax_evaluation_accuracy.set_title(evaluation_str + " Accuracy")
         ax_evaluation_accuracy.set(xlabel="# of Epochs", ylabel="Accuracy")
         ax_evaluation_accuracy.set_aspect("auto")
-        
-        plt.pause(0.005)
+
+        plt.pause(0.01)
 
     # Function to evaluate the model on a dataset
     # Returns the loss on that dataset, the confusion matrix, and a classification report
@@ -307,7 +308,6 @@ class LSTMNetwork:
 
             if epoch % evaluation_timestep == 0:
                 # Print epoch
-                print(f"Evaluating epoch {epoch+1}")
                 if debug:
                     curr_train_loss, train_cm, _ = self.evaluate(net, trainloader)
                     curr_train_accuracy = 100.0 * (train_cm.trace() / train_cm.sum())
@@ -317,10 +317,6 @@ class LSTMNetwork:
                     curr_evaluation_accuracy = 100.0 * (
                         evaluation_cm.trace() / evaluation_cm.sum()
                     )
-                    print("Epoch Train loss", curr_train_loss)
-                    print("Epoch Evaluation loss", curr_evaluation_loss)
-                    print("Train accuracy", curr_train_accuracy)
-                    print("Evaluation accuracy", curr_evaluation_accuracy)
                     epoch_idx = math.floor(epoch / evaluation_timestep)
                     train_loss[epoch_idx] = curr_train_loss
                     evaluation_loss[epoch_idx] = curr_evaluation_loss
@@ -345,7 +341,6 @@ class LSTMNetwork:
                     early_stopping_obj(curr_evaluation_loss, net)
                     is_stop_early = early_stopping_obj.is_stop_early
                 if is_stop_early:
-                    print("Early stopping")
                     break
 
         # Process is complete.
@@ -432,7 +427,7 @@ class LSTMNetwork:
             disp.plot()
 
         if debug:
-            plt.show()
+            plt.close("all")
         return (
             all_auc,
             final_train_loss,
@@ -452,6 +447,9 @@ class LSTMNetwork:
         early_stopping_obj=None,
         debug=True,
     ):
+        if not self.num_folds > 0:
+            print("Cannot train without hyperparameter tuning")
+            return
         training_dataset, testing_dataset = train_test_split(
             src_dataset, test_size=test_ratio, stratify=src_dataset.y
         )
@@ -468,20 +466,25 @@ class LSTMNetwork:
             training_dataset_X, training_dataset_y, src_dataset.diagnoses_mappings
         )
         evaluation_timestep = 10
-        # Set this incase num_folds = 0
-        max_epochs = num_epochs
-        if self.num_folds > 0:
-            max_epochs = self.trainKFold(
-                training_dataset,
-                num_epochs,
-                early_stopping_obj,
-                evaluation_timestep,
-                debug,
+
+        hyperparams, max_epochs = self.hyperparameter_search(
+            training_dataset,
+            num_epochs,
+            early_stopping_obj,
+            evaluation_timestep,
+            debug,
+        )
+
+        print("Best hyperparams", hyperparams)
+        self.hidden_dim_list = hyperparams["hidden_dim"]
+        self.learning_rate_list = hyperparams["learning_rate"]
+        self.weight_decay_list = hyperparams["weight_decay"]
+        self.num_lstm_layers_list = hyperparams["num_lstm_layers"]
+
+        if max_epochs % evaluation_timestep != 0:
+            max_epochs = (
+                int(evaluation_timestep - max_epochs % evaluation_timestep) + max_epochs
             )
-            if max_epochs % evaluation_timestep != 0:
-                max_epochs = (
-                    int(evaluation_timestep - max_epochs % evaluation_timestep) + max_epochs
-                )
         print("Running final training for ", max_epochs, "epochs")
         self.trainFinalModel(
             training_dataset,
@@ -491,6 +494,58 @@ class LSTMNetwork:
             debug,
         )
 
+    # Perform Hyperparameter search on the training set
+    def hyperparameter_search(
+        self,
+        training_dataset,
+        num_epochs,
+        early_stopping_obj,
+        evaluation_timestep,
+        debug=True,
+    ):
+        best_hyperparams = None
+        best_performance = 0
+        best_max_epochs = None
+        for hidden_dim in self.hidden_dim_list:
+            for learning_rate in self.learning_rate_list:
+                for weight_decay in self.weight_decay_list:
+                    for num_lstm_layers in self.num_lstm_layers_list:
+                        print(
+                            f"Training with hidden_dim={hidden_dim}, learning_rate={learning_rate}, weight_decay={weight_decay}, num_lstm_layers={num_lstm_layers}"
+                        )
+                        self.hidden_dim = hidden_dim
+                        self.learning_rate = learning_rate
+                        self.weight_decay = weight_decay
+                        self.num_lstm_layers = num_lstm_layers
+
+                        # Train the network using K-Fold Cross Validation on the training set
+                        max_epochs, avg_auc = self.trainKFold(
+                            training_dataset,
+                            num_epochs,
+                            early_stopping_obj,
+                            evaluation_timestep,
+                            debug,
+                        )
+                        if avg_auc > best_performance:
+                            best_performance = avg_auc
+                            best_max_epochs = max_epochs
+                            best_hyperparams = {
+                                "hidden_dim": hidden_dim,
+                                "learning_rate": learning_rate,
+                                "weight_decay": weight_decay,
+                                "num_lstm_layers": num_lstm_layers,
+                            }
+
+                            if os.path.exists(os.path.join(self.save_path, "Best")):
+                                shutil.rmtree(os.path.join(self.save_path, "Best"))
+                            os.rename(
+                                os.path.join(self.save_path, "K-Fold"),
+                                os.path.join(self.save_path, "Best"),
+                            )
+        if os.path.exists(os.path.join(self.save_path, "K-Fold")):
+            shutil.rmtree(os.path.join(self.save_path, "K-Fold"))
+        os.rename(os.path.join(self.save_path, "Best"), os.path.join(self.save_path, "K-Fold"))
+        return best_hyperparams, best_max_epochs
     # Train the network on the entire training set and evaluate on test set
     def trainFinalModel(
         self,
@@ -649,7 +704,12 @@ class LSTMNetwork:
                     f"\t\tAverage: {np.average(list(fold_wise_auc[ndd_class].values()))}"
                 )
                 print("---")
-        return max_epochs
+
+        mean_macro_average_auc = sum(
+            v for inner in fold_wise_auc.values() for v in inner.values()
+        ) / sum(len(inner) for inner in fold_wise_auc.values())
+
+        return max_epochs, mean_macro_average_auc
 
     # Compute ROC for each class
     def compute_one_v_rest_roc(self, lstm, label_mappings, testloader, interp_fpr):

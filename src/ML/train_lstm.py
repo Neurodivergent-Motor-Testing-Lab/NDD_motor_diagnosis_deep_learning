@@ -108,10 +108,10 @@ if __name__ == "__main__":
     )
     parser.add_argument("--num_epochs", type=int, default=750)
     parser.add_argument("--num_folds", type=int, default=5)
-    parser.add_argument("--hidden_dim", type=int, default=10)
-    parser.add_argument("--learning_rate", type=float, default=0.001)
-    parser.add_argument("--weight_decay", type=float, default=0.01)
-    parser.add_argument("--num_lstm_layers", type=int, default=2)
+    parser.add_argument("--hidden_dims", nargs='+', type=int, default=[10, 20])
+    parser.add_argument("--learning_rates", nargs='+', type=float, default=[0.001, 0.0025, 0.005])
+    parser.add_argument("--weight_decays", nargs='+', type=float, default=[0.001, 0.005, 0.01, 0.05])
+    parser.add_argument("--num_lstm_layers", nargs='+', type=int, default=[1, 2])
     parser.add_argument("--batch_size", type=int, default=500)
     parser.add_argument("--min_sequence_length", type=int, default=105)
     parser.add_argument("--dropout", type=float, default=0.3)
@@ -122,7 +122,7 @@ if __name__ == "__main__":
         default=40,
     )
     parser.add_argument("--enable_early_stopping", action="store_true")
-    parser.add_argument("--early_stopping_patience", type=int, default=58)
+    parser.add_argument("--early_stopping_patience", type=int, default=5)
     parser.add_argument("--early_stopping_delta", type=float, default=0.005)
     parser.add_argument(
         "--label_shuffle_probability",
@@ -193,10 +193,10 @@ if __name__ == "__main__":
         input_dim=num_features,
         output_dim=num_outputs,
         save_path=op_experiment_path,
-        hidden_dim=args.hidden_dim,
-        learning_rate=args.learning_rate,
-        weight_decay=args.weight_decay,
-        num_lstm_layers=args.num_lstm_layers,
+        hidden_dim_list=args.hidden_dims,
+        learning_rate_list=args.learning_rates,
+        weight_decay_list=args.weight_decays,
+        num_lstm_layers_list=args.num_lstm_layers,
         batch_size=args.batch_size,
         dropout=args.dropout,
     )
